@@ -62,6 +62,12 @@ body.mode-extra .job.on{border-color:var(--o);box-shadow:0 0 0 2px var(--o) inse
 .mic.rec{background:var(--red);box-shadow:0 0 0 14px var(--rl),0 0 0 28px #fee2e280;animation:pulse 1.2s infinite}
 @keyframes pulse{50%{box-shadow:0 0 0 20px var(--rl),0 0 0 38px #fee2e240}}
 .mic svg{width:80px;height:80px}
+.mic.mini{width:58px;height:58px;margin:0;box-shadow:0 0 0 5px var(--accl);flex:none}
+.mic.mini svg{width:30px;height:30px}
+.draft-mic{display:flex;align-items:center;gap:12px;margin-top:12px}
+.draft-mic .miclabel{font-size:17px;text-align:left}
+.draft-mic .mic-hint{text-align:left;padding:0;margin-top:2px}
+.extra-field textarea.i{border-color:var(--o);background:var(--ol);font-weight:700;color:var(--od)}
 .miclabel{font-size:22px;font-weight:800}
 .mic-hint{font-size:15px;color:var(--g5);font-weight:600;margin-top:4px;text-align:center;padding:0 24px}
 .live{margin:14px 20px 0;min-height:90px;font-size:18px;line-height:1.45;padding:14px 16px}
@@ -711,47 +717,237 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   }
 
   // ---------- structuring ----------
-  var MONEY_RE = /\$\d[\d,]*(?:\.\d{1,2})?/g;
-  var PURCHASE_RE = /\b(bought|picked up|purchased|grabbed|used|went through|ordered|materials?|supplies|spent)\b/i;
-  var WORK_START_RE = /^(installed|replaced|set|finished|fixed|built|framed|hung|painted|demoed|demo'd|removed|poured|ran|patched|sanded|cleaned|tore|repaired|cut|laid|mounted|sealed|stained|grouted|tiled|started|wrapped|dug|leveled|prepped|primed|caulked|swapped)\b/i;
+  // Contractor speech is usually one run-on. Split on field cues (materials, labor,
+  // extras, "client wants") before classifying, so one sentence can fill several fields.
   var NOTES_RE = /\b(note|notes|remember|reminder|tomorrow|next time|next week|come back|coming back|follow up|waiting on|waiting for|inspection|inspector|weather|rain|heads up|keep in mind|gate code|lockbox|the dog|need to order|have to order|still need)\b/i;
-  var PRICE_WORD_RE = /\b(charge|charging|price|priced|quote|quoted|cost|costs|total|bill|billing|run them|run her|run him|it'll be|it will be|that'll be|for the extra|extra is|labor)\b/i;
-  var PRICE_ONLY_START = /^(charge|charging|price|the price|quote|cost|total|bill|it'll be|it will be|that'll be|that's|that is|I'll charge|I'm charging|we'll charge|going to charge|gonna charge|I'm gonna charge|I'll run)/i;
+  var PRICE_ONLY_START = /^(?:and\s+|plus\s+|also\s+)?(?:i(?:'ll| will)|we(?:'ll| will)|i(?:'m| am)\s+)?(?:going to\s+|gonna\s+)?(?:charge|charging|price|the price|quote|cost|total|bill|it'll be|it will be|that'll be|that's|that is|we'll charge|I'll charge|I'm charging|I'll run|run them|run her|run him)\b/i;
+  var TOTAL_CUE = /\b(total|all in|altogether|grand total|out the door|charge|charging|price|priced|quote|quoted|bill|billing|that'll be|that will be|it'll be|it will be|comes to|coming to|run them|run her|run him|gonna charge|going to charge)\b/i;
 
   function sentences(text) {
-    return text.replace(/([.!?])\s+/g, '$1\n').split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+    return String(text || '').replace(/([.!?])\s+/g, '$1\n').split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+  }
+  function moneyList(s) {
+    var m = String(s || '').match(/\$\d[\d,]*(?:\.\d{1,2})?/g);
+    return m || [];
+  }
+  function stripEndPunct(s) { return String(s || '').replace(/[.!?]+$/g, '').trim(); }
+  function capFirst(s) { s = String(s || '').trim(); return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
+  function ensurePeriod(s) { s = String(s || '').trim(); if (!s) return ''; return /[.!?]$/.test(s) ? s : s + '.'; }
+  function normKey(s) { return String(s || '').toLowerCase().replace(/[.!?,—–-]/g, '').replace(/\s+/g, ' ').trim(); }
+  function pushUnique(arr, s) {
+    if (!s) return;
+    var k = normKey(s);
+    if (!k) return;
+    if (arr.some(function (x) { return normKey(x) === k; })) return;
+    arr.push(s);
+  }
+  function asItem(s) {
+    s = stripEndPunct(s).replace(/[,\s]+$/g, '').trim();
+    return s ? ensurePeriod(capFirst(s)) : '';
+  }
+  function sumMoney(raws) {
+    var total = 0, n = 0;
+    raws.forEach(function (raw) {
+      var v = parseFloat(String(raw).replace(/[$,]/g, ''));
+      if (!isNaN(v)) { total += v; n++; }
+    });
+    if (!n) return '';
+    return fmtMoney(Math.round(total * 100) / 100);
   }
 
-  function lastMoney(s) { var m = s.match(MONEY_RE); return m ? m[m.length - 1] : ''; }
+  function splitClauses(text) {
+    var out = [];
+    sentences(text).forEach(function (chunk) {
+      // Pull "and the total…" off the labor/extra clause in one cut so it is not shredded into "and" / "the".
+      chunk = chunk.replace(/\s*(?:,?\s*and)?\s+(?=(?:the\s+)?total\b)/gi, '\n');
+      var bits = [chunk.replace(/\bof\s+labor\b/gi, 'of\u0000labor')];
+      var cues = [
+        /\s+(?=(?:materials?|supplies)\s*(?:was|were|are|is|:))/i,
+        /,\s*(?=(?:used|using|bought|picked up|purchased|grabbed|ordered|went through)\b)/i,
+        /\s+(?=(?:(?:i|we)\s+)?(?:used|using|bought|picked up|purchased|grabbed|ordered|went through)\b)/i,
+        /,\s*(?=(?:plus|and also)\b)/i,
+        /\s+(?=\bplus\b)/i,
+        /\s+(?=\d+(?:\.\d+)?\s*(?:hours?|hrs?)\s+(?:of\u0000labor|labor)\b)/i,
+        /\s+(?=\blabor\b)/i,
+        /\s+(?=(?:the\s+)?(?:client|customer|homeowner|she|he|they)\s+wants?\b)/i
+      ];
+      cues.forEach(function (re) {
+        var next = [];
+        bits.forEach(function (b) {
+          b.split(re).forEach(function (part) {
+            part.split(/\n/).forEach(function (line) { var p = line.trim(); if (p) next.push(p); });
+          });
+        });
+        bits = next;
+      });
+      var merged = [];
+      bits.forEach(function (b) {
+        if (merged.length && /^(?:i|we|and|plus|the|a|an)$/i.test(merged[merged.length - 1])) merged[merged.length - 1] += ' ' + b;
+        else merged.push(b);
+      });
+      merged.forEach(function (b) {
+        b = b.replace(/\u0000/g, ' ').replace(/^(?:plus|and also|also|and then|then),?\s+/i, '').replace(/[,\s]+$/g, '').trim();
+        if (b) out.push(b);
+      });
+    });
+    return out;
+  }
+
+  function materialClause(s) {
+    var t = stripEndPunct(s).replace(/^(?:plus|and|also)\s+/i, '');
+    var m = t.match(/^(?:(?:i|we)\s+)?(?:materials?|supplies)\s*(?:was|were|are|is|:|-)\s*(.+)$/i);
+    if (m) return asItem(m[1]);
+    m = t.match(/^(?:(?:i|we)\s+)?(?:used|using)\s+(?!to\b)(.+)$/i);
+    if (m) return asItem(m[1]);
+    m = t.match(/^(?:(?:i|we)\s+)?went through\s+(.+)$/i);
+    if (m) return asItem(m[1]);
+    if (/^(?:(?:i|we)\s+)?(?:bought|picked up|purchased|grabbed|ordered)\b/i.test(t)) return asItem(t.replace(/^(?:(?:i|we)\s+)/i, ''));
+    return null;
+  }
+
+  function laborClause(s) {
+    var t = stripEndPunct(s).replace(/^(?:plus|and|also)\s+/i, '');
+    if (!/\blabor\b/i.test(t)) return null;
+    var hoursM = t.match(/(\d+(?:\.\d+)?)\s*(hours?|hrs?)/i);
+    var money = moneyList(t);
+    var price = money.length ? money[money.length - 1] : '';
+    var hours = hoursM ? hoursM[1] : '';
+    var rest = t.replace(/\blabor\b/ig, ' ').replace(/\$\d[\d,]*(?:\.\d{1,2})?/g, ' ').replace(/\d+(?:\.\d+)?\s*(?:hours?|hrs?)/ig, ' ').replace(/\b(?:of|at|for|is|was|were|are|the|a|an|plus|and|also)\b/ig, ' ').replace(/\s+/g, ' ').trim();
+    if (rest.split(/\s+/).filter(Boolean).length > 4) return null;
+    var label = hours ? (hours + ' ' + (hours === '1' ? 'hour' : 'hours') + ' of labor') : 'Labor';
+    if (price) label += ' — ' + price;
+    return { price: price, line: label };
+  }
+
+  function extraClause(s) {
+    var t = stripEndPunct(s).replace(/^(?:plus|and|also)\s+/i, '');
+    var monies = moneyList(t);
+    if (!monies.length) return null;
+    var amount = monies[monies.length - 1];
+    var ofAdded = t.match(/(\$[\d,.]+)\s+of\s+(.+?)\s+added\b(?:\s+to\s+the\s+(job|quote|contract|bill|invoice))?/i);
+    if (ofAdded) {
+      var noun = ofAdded[2].replace(/^(?:a|an|the)\s+/i, '').trim();
+      var where = ofAdded[3] ? ' to the ' + ofAdded[3].toLowerCase() : ' to the job';
+      return { amount: ofAdded[1], line: capFirst(noun) + ' added' + where + ' — ' + ofAdded[1], work: ensurePeriod('Added ' + noun.toLowerCase() + where) };
+    }
+    var addOf = t.match(/\badd(?:ed|ing)?\s+(\$[\d,.]+)\s+of\s+(.+?)(?:\s+to\s+the\s+(job|quote|contract|bill|invoice))?\s*$/i);
+    if (addOf) {
+      var noun2 = addOf[2].replace(/^(?:a|an|the)\s+/i, '').replace(/[.\s]+$/g, '');
+      var where2 = addOf[3] ? ' to the ' + addOf[3].toLowerCase() : '';
+      return { amount: addOf[1], line: capFirst(noun2) + (where2 ? ' added' + where2 : '') + ' — ' + addOf[1], work: ensurePeriod('Added ' + noun2.toLowerCase() + (where2 || '')) };
+    }
+    var cue = /\b(extra|add-?on|change order|upcharge|on top of|additional charge|added to the (?:job|quote|contract|bill|invoice))\b/i.test(t) || (/\badded\b/i.test(t) && /\b(?:for|at)\b/i.test(t));
+    if (!cue) return null;
+    var label = t
+      .replace(/\$\d[\d,]*(?:\.\d{1,2})?/g, ' ')
+      .replace(/\b(?:i|we)\s+had to (?:have|add|get)\b/gi, ' ')
+      .replace(/\b(?:the\s+)?(?:client|customer|homeowner|she|he|they)\s+wants?\b/gi, ' ')
+      .replace(/\b(?:for|at|that's|thats|which is|priced at)\b/gi, ' ')
+      .replace(/\b(?:an?\s+)?(?:extra|add-on|addon|change order|upcharge|additional charge)\b/gi, ' ')
+      .replace(/\b(?:please|just|also|plus|and|to the job|to the quote|to the contract|to the bill)\b/gi, ' ')
+      .replace(/\s+/g, ' ').trim().replace(/^[,\s]+|[,\s]+$/g, '');
+    label = label.replace(/^(?:a|an|the)\s+/i, '');
+    if (!label) label = 'Extra';
+    var work = t.replace(/\$\d[\d,]*(?:\.\d{1,2})?/g, ' ').replace(/\s+(?:for|at)\s*$/i, ' ').replace(/\s+/g, ' ').trim();
+    return { amount: amount, line: capFirst(label) + ' — ' + amount, work: ensurePeriod(capFirst(work)) };
+  }
+
+  function stripPriceTail(s) {
+    var t = stripEndPunct(s);
+    t = t.replace(/,?\s+(?:and\s+)?(?:i(?:'ll| will)|we(?:'ll| will)|i(?:'m| am))?\s*(?:gonna\s+|going to\s+)?(?:charge|charging|bill|quote|quoted)\b[^$]*\$[\d,.]+.*$/i, '');
+    t = t.replace(/,?\s+(?:for|at|which is|that's|thats|total(?:ing)?|price is|it(?:'ll| will) be|that(?:'ll| will) be|comes to)\s+\$[\d,.]+.*$/i, '');
+    t = t.replace(/\s+\$[\d,.]+\s*$/, '');
+    return t.replace(/[,\s]+(?:and|then|plus|also)\s*$/i, '').trim();
+  }
+
+  function explicitAmount(s) {
+    if (!moneyList(s).length) return '';
+    if (!TOTAL_CUE.test(s) && !PRICE_ONLY_START.test(stripEndPunct(s))) return '';
+    return moneyList(s).slice(-1)[0];
+  }
+
+  function tidyClause(s) {
+    var t = stripEndPunct(s).replace(/[,\s]+$/g, '').replace(/\b(?:and then|and|then|plus|also)\s*$/i, '').replace(/[,\s]+$/g, '').trim();
+    return t ? ensurePeriod(capFirst(t)) : '';
+  }
 
   function structure(clean, mode) {
-    var out = { description: [], materials: [], price: '', notes: [] };
-    var fallbackMoney = '';
-    sentences(clean).forEach(function (s) {
-      var money = lastMoney(s);
-      var words = s.split(/\s+/).length;
-      var isPurchase = PURCHASE_RE.test(s) && !(WORK_START_RE.test(s) && !/\b(bought|picked up|purchased|spent)\b/i.test(s));
-      if (money && PRICE_WORD_RE.test(s) && !/\b(bought|picked up|purchased|spent)\b/i.test(s)) {
-        out.price = money;
-        if (PRICE_ONLY_START.test(s) || words <= 7) return; // price-only sentence: goes to Price field only
-        s = s.replace(/,?\s+(?:for|at|which is|that's|thats)\s+\$[\d,.]+(?=[.!?]?$)/i, '').replace(/[^.!?]$/, '$&.');
-        out.description.push(s); return;
-      }
-      if (isPurchase) {
-        out.materials.push(s.replace(/^(?:then|also|and|plus),?\s+/i, '').replace(/^(?:I|we)\s+(?:also\s+)?/i, '').replace(/^materials?:?\s*(?:were|was|are)?\s*/i, '').replace(/^\w/, function (c) { return c.toUpperCase(); }));
+    var desc = [], materials = [], notes = [], extras = [], labor = [], parts = [];
+    var explicitPrice = '', fallback = '';
+    splitClauses(clean).forEach(function (s) {
+      if (!s) return;
+      var mat = materialClause(s);
+      var lab = laborClause(s);
+      var ex = extraClause(s);
+      if (mat && !lab && !ex) { pushUnique(materials, mat); return; }
+      if (lab && !ex) { pushUnique(labor, lab.line); if (lab.price) parts.push(lab.price); return; }
+      if (ex) { pushUnique(extras, ex.line); if (ex.amount) parts.push(ex.amount); if (ex.work) pushUnique(desc, ex.work); return; }
+      var monies = moneyList(s);
+      if (NOTES_RE.test(s) && !monies.length) {
+        pushUnique(notes, asItem(s.replace(/^(?:note to self|note|notes|reminder|heads up),?:?\s*/i, '')));
         return;
       }
-      if (NOTES_RE.test(s)) { out.notes.push(s.replace(/^(?:note to self|note|reminder|heads up),?:?\s*/i, '').replace(/^\w/, function (c) { return c.toUpperCase(); })); return; }
-      if (money && !fallbackMoney) fallbackMoney = money;
-      out.description.push(s);
+      var explicit = explicitAmount(s);
+      if (explicit) {
+        explicitPrice = explicit;
+        if (!PRICE_ONLY_START.test(stripEndPunct(s))) {
+          var rest = stripPriceTail(s);
+          if (rest && rest.split(/\s+/).filter(Boolean).length > 3) pushUnique(desc, tidyClause(rest));
+        }
+        return;
+      }
+      if (monies.length && !fallback) fallback = monies[monies.length - 1];
+      var clause = tidyClause(s);
+      if (clause) pushUnique(desc, clause);
     });
-    if (!out.price && mode === 'extra' && fallbackMoney) out.price = fallbackMoney;
+    var price = explicitPrice || sumMoney(parts);
+    if (!price && mode === 'extra' && fallback) price = fallback;
     return {
-      description: out.description.join(' '),
-      materials: out.materials.join('\n'),
-      price: out.price,
-      notes: out.notes.join('\n')
+      description: desc.join(' '),
+      materials: materials.join('\n'),
+      labor: labor.join('\n'),
+      extras: extras.join('\n'),
+      price: price,
+      notes: notes.join('\n')
     };
+  }
+
+  function normField(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
+  function splitParts(s) {
+    var acc = [];
+    String(s || '').split(/\n/).forEach(function (line) {
+      line.replace(/([.!?])\s+/g, '$1\n').split('\n').forEach(function (p) { p = p.trim(); if (p) acc.push(p); });
+    });
+    return acc;
+  }
+  // Keep text the user already changed. Append only sentences the new speech added,
+  // not the previous cleanup lines they rewrote.
+  function mergeKept(user, prev, generated) {
+    user = String(user || '').trim();
+    if (!user) return '';
+    var prevKeys = splitParts(prev).map(normKey);
+    var have = normKey(user);
+    var add = [];
+    splitParts(generated).forEach(function (p) {
+      var k = normKey(p);
+      if (!k || have.indexOf(k) !== -1) return;
+      if (prevKeys.indexOf(k) !== -1) return;
+      add.push(p);
+    });
+    if (!add.length) return user;
+    var sep = (/\n/.test(user) || /\n/.test(generated)) ? '\n' : ' ';
+    return user + sep + add.join(sep);
+  }
+  function mergeDraftFields(before, prevGen, nextGen) {
+    before = before || {}; prevGen = prevGen || {}; nextGen = nextGen || {};
+    var out = {};
+    ['description', 'materials', 'notes', 'labor', 'extras'].forEach(function (k) {
+      var b = before[k] || '', g = prevGen[k] || '', n = nextGen[k] || '';
+      out[k] = normField(b) !== normField(g) ? mergeKept(b, g, n) : n;
+    });
+    var bp = before.price || '', gp = prevGen.price || '', np = nextGen.price || '';
+    out.price = normField(bp) !== normField(gp) ? bp : np;
+    return out;
   }
 
   function makeDraft(raw, mode) {
@@ -787,7 +983,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     return prev[m];
   }
   function draftToText(d) {
-    return ['WORK: ' + (d.description || ''), 'MATERIALS: ' + (d.materials || ''), 'PRICE: ' + (d.price || ''), 'NOTES: ' + (d.notes || '')].join('\n');
+    d = d || {};
+    return ['WORK: ' + (d.description || ''), 'MATERIALS: ' + (d.materials || ''), 'LABOR: ' + (d.labor || ''), 'EXTRAS: ' + (d.extras || ''), 'PRICE: ' + (d.price || ''), 'NOTES: ' + (d.notes || '')].join('\n');
   }
   function editStats(gen, fin) {
     var a = draftToText(gen), b = draftToText(fin);
@@ -801,7 +998,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     return { charDistance: dist, charPct: pct, wordDistance: wdist, wordPct: wpct, genChars: a.length, finalChars: b.length, rating: rating };
   }
 
-  var api = { cleanText: cleanText, structure: structure, makeDraft: makeDraft, editStats: editStats, levenshtein: levenshtein, numbersToDigits: numbersToDigits, fmtMoney: fmtMoney };
+  var api = { cleanText: cleanText, structure: structure, makeDraft: makeDraft, mergeDraftFields: mergeDraftFields, editStats: editStats, levenshtein: levenshtein, numbersToDigits: numbersToDigits, fmtMoney: fmtMoney };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.SiteLogCleanup = api;
 })(this);
 </script>
@@ -873,7 +1070,9 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
   // ---------- speech ----------
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  var dict = { on: false, rec: null, committed: '', sessFinal: '', interim: '', stopping: false, error: '' };
+  var dict = { on: false, rec: null, committed: '', sessFinal: '', interim: '', stopping: false, error: '', appendTo: null, done: false };
+  // iOS Safari ignores continuous=true and ends recognition on a pause. Restart from onend until the user taps stop.
+  function isIOS() { return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
 
   function liveText() { return (dict.committed + ' ' + dict.sessFinal).trim(); }
   function paintLive() {
@@ -881,16 +1080,25 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     var fin = liveText();
     box.innerHTML = fin || dict.interim ? esc(fin) + ' <span class="interim">' + esc(dict.interim) + '</span>' : '<span class="interim">Listening… start talking.</span>';
   }
-  function startDictation() {
-    if (!SR) { showTyped(true); return; }
-    dict = { on: true, rec: null, committed: '', sessFinal: '', interim: '', stopping: false, error: '' };
-    renderHome();
+  function blankDict(appendTo) {
+    return { on: true, rec: null, committed: '', sessFinal: '', interim: '', stopping: false, error: '', cancel: false, done: false, appendTo: appendTo || null, emptyEnds: 0 };
+  }
+  function startDictation() { beginDictation(); }
+  function beginDictation(opts) {
+    opts = opts || {};
+    if (!SR) {
+      if (opts.appendTo) toast('Voice typing isn\'t supported in this browser. Use Chrome, Edge, or Safari.');
+      else showTyped(true);
+      return;
+    }
+    dict = blankDict(opts.appendTo);
+    if (opts.appendTo) renderDraft(); else renderHome();
     startSession();
   }
   function startSession() {
     var r = new SR();
     r.lang = settings.lang || 'en-US';
-    r.continuous = true;
+    r.continuous = !isIOS();
     r.interimResults = true;
     r.maxAlternatives = 1;
     dict.rec = r; dict.sessFinal = ''; dict.interim = '';
@@ -901,7 +1109,9 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         if (e.results[i].isFinal) {
           // Android Chrome sometimes repeats the whole utterance in each final result: keep the longest cumulative version
           var f = fin.trim(), n = t.trim();
-          if (f && n.toLowerCase().indexOf(f.toLowerCase()) === 0) fin = n; else fin += ' ' + n;
+          if (f && n.toLowerCase().indexOf(f.toLowerCase()) === 0) fin = n;
+          else if (f && f.toLowerCase().indexOf(n.toLowerCase()) === 0) { /* already have the longer phrase */ }
+          else fin += ' ' + n;
         } else interim += t;
       }
       dict.sessFinal = fin.trim(); dict.interim = interim.trim();
@@ -919,30 +1129,89 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       var w = $('#micErr'); if (w) { w.textContent = msg; w.classList.remove('hide'); }
     };
     r.onend = function () {
-      dict.committed = (dict.committed + ' ' + dict.sessFinal + (dict.stopping ? ' ' + dict.interim : '')).trim();
+      if (dict.rec !== r || dict.done) return;
+      var fin = (dict.sessFinal || '').trim();
+      var interim = (dict.interim || '').trim();
+      if (interim && fin.toLowerCase().indexOf(interim.toLowerCase()) === -1) fin = (fin + ' ' + interim).trim();
+      if (fin) { dict.committed = (dict.committed + ' ' + fin).trim(); dict.emptyEnds = 0; }
+      else dict.emptyEnds = (dict.emptyEnds || 0) + 1;
       dict.sessFinal = ''; dict.interim = '';
-      if (dict.on && !dict.stopping) { try { startSession(); return; } catch (err) { /* fall through */ } }
+      if (dict.on && !dict.stopping) {
+        // Recognition ended on its own (normal on iOS). Keep listening.
+        var delay = isIOS() ? 280 : 40;
+        setTimeout(function () {
+          if (!dict.on || dict.stopping || dict.done) return;
+          try { startSession(); }
+          catch (err) {
+            setTimeout(function () {
+              if (!dict.on || dict.stopping || dict.done) return;
+              try { startSession(); }
+              catch (e2) {
+                dict.error = 'Voice paused. Tap the mic to keep going.';
+                dict.on = false;
+                finishDictation();
+              }
+            }, 350);
+          }
+        }, delay);
+        return;
+      }
       finishDictation();
     };
-    try { r.start(); } catch (err) { dict.error = String(err); }
+    try { r.start(); }
+    catch (err) { dict.error = 'Couldn\'t start the microphone. Tap it once more.'; }
   }
   var finishTimer = null;
   function stopDictation(cancel) {
-    if (!dict.rec) { dict.on = false; return; }
+    if (!dict.on && !dict.rec) return;
     dict.stopping = true;
-    if (cancel) { dict.on = false; dict.cancel = true; try { dict.rec.abort(); } catch (e) {} return; }
-    try { dict.rec.stop(); } catch (e) {}
+    if (cancel) {
+      dict.on = false; dict.cancel = true; dict.done = true;
+      try { if (dict.rec) dict.rec.abort(); } catch (e) {}
+      return;
+    }
+    try { if (dict.rec) dict.rec.stop(); } catch (e) {}
     clearTimeout(finishTimer);
-    finishTimer = setTimeout(function () { if (dict.on) { dict.committed = (dict.committed + ' ' + dict.sessFinal + ' ' + dict.interim).trim(); finishDictation(); } }, 2500);
-    var lbl = $('#micLabel'); if (lbl) lbl.textContent = 'Finishing…';
+    finishTimer = setTimeout(function () {
+      if (!dict.done) {
+        dict.committed = (dict.committed + ' ' + (dict.sessFinal || '') + ' ' + (dict.interim || '')).trim();
+        finishDictation();
+      }
+    }, 1600);
+    var lbl = $('#micLabel') || $('#draftMicLabel'); if (lbl) lbl.textContent = 'Finishing…';
+  }
+  function showMicError() {
+    var w = $('#micErr');
+    if (w && dict.error) { w.textContent = dict.error; w.classList.remove('hide'); }
   }
   function finishDictation() {
     clearTimeout(finishTimer);
-    var wasOn = dict.on || dict.stopping; dict.on = false;
-    if (dict.cancel) return;
-    var text = dict.committed.trim();
-    if (!wasOn) return;
-    if (!text) { if (view === 'home') { renderHome(); if (!dict.error) toast("Didn't catch anything. Try again closer to the phone."); else { var w = $('#micErr'); if (w) { w.textContent = dict.error; w.classList.remove('hide'); } } } return; }
+    if (dict.done) return;
+    var wasOn = dict.on || dict.stopping;
+    var appendTo = dict.appendTo;
+    var cancelled = dict.cancel;
+    dict.on = false;
+    dict.done = true;
+    if (cancelled || !wasOn) return;
+    var text = (dict.committed || '').trim();
+    if (appendTo) {
+      if (!text) {
+        renderDraft();
+        if (dict.error) showMicError();
+        else toast("Didn't catch anything. Tap the mic and try again.");
+        return;
+      }
+      appendToRecord(appendTo, text);
+      return;
+    }
+    if (!text) {
+      if (view === 'home') {
+        renderHome();
+        if (!dict.error) toast("Didn't catch anything. Try again closer to the phone.");
+        else showMicError();
+      }
+      return;
+    }
     createRecord(text, 'voice');
   }
 
@@ -951,7 +1220,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     typedOpen = false;
     var j = job(ui.jobId) || jobs[0];
     var d = C.makeDraft(raw, ui.mode);
-    var gen = { description: d.description, materials: d.materials, price: d.price, notes: d.notes };
+    var gen = { description: d.description || '', materials: d.materials || '', labor: d.labor || '', extras: d.extras || '', price: d.price || '', notes: d.notes || '' };
     var r = {
       id: uid('r'), jobId: j.id, jobName: j.name, client: j.client || '', mode: ui.mode, createdAt: Date.now(),
       inputMethod: method, raw: raw, cleaned: d.cleaned, generated: gen, fields: Object.assign({}, gen),
@@ -1055,7 +1324,33 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
   // ---------- DRAFT ----------
   function currentFields() {
-    return { description: $('#fDesc').value.trim(), materials: $('#fMat').value.trim(), price: normPrice($('#fPrice').value), notes: $('#fNotes').value.trim() };
+    return {
+      description: $('#fDesc').value.trim(),
+      materials: $('#fMat').value.trim(),
+      labor: $('#fLabor') ? $('#fLabor').value.trim() : '',
+      extras: $('#fExtra') ? $('#fExtra').value.trim() : '',
+      price: normPrice($('#fPrice').value),
+      notes: $('#fNotes').value.trim()
+    };
+  }
+  function appendToRecord(id, text) {
+    var r = rec(id); if (!r) return;
+    if ($('#fDesc')) saveDraftFields(r);
+    var before = {
+      description: r.fields.description || '', materials: r.fields.materials || '', labor: r.fields.labor || '',
+      extras: r.fields.extras || '', price: r.fields.price || '', notes: r.fields.notes || ''
+    };
+    var prevGen = Object.assign({ description: '', materials: '', labor: '', extras: '', price: '', notes: '' }, r.generated || {});
+    r.raw = ((r.raw || '').replace(/\s+$/, '') + ' ' + String(text || '').trim()).trim();
+    var d = C.makeDraft(r.raw, r.mode);
+    var nextGen = { description: d.description || '', materials: d.materials || '', labor: d.labor || '', extras: d.extras || '', price: d.price || '', notes: d.notes || '' };
+    r.fields = C.mergeDraftFields(before, prevGen, nextGen);
+    r.generated = nextGen;
+    r.cleaned = d.cleaned;
+    if (r.inputMethod === 'typed') r.inputMethod = 'voice';
+    persist();
+    renderDraft();
+    toast('Added to this log');
   }
   function renderDraft() {
     var r = rec(viewArg); if (!r) return go('home');
@@ -1065,18 +1360,34 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       '<div class="top"><div class="row"><button class="icon-btn" id="back">' + ICON.back + '</button><div style="flex:1;min-width:0"><h2 style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(r.jobName) + '</h2><div class="meta">' + fmtDate(r.createdAt) + ' · ' + fmtTime(r.createdAt) + ' · ' + (r.inputMethod === 'voice' ? '🎤 dictated' : r.inputMethod === 'typed' ? '⌨️ typed' : '🧪 injected') + '</div></div>' +
       (extra ? '<span class="pill o">⚑ EXTRA</span>' : '<span class="pill n">Daily log</span>') + '</div></div>' +
       '<div class="mx"><div class="warn" style="background:var(--g1);color:var(--g7)"><b>Check the draft.</b> Fix anything that\'s wrong, then send. We\'re measuring how much you had to change.</div>' +
+      (function () {
+        var recording = dict.on && dict.appendTo === r.id;
+        return '<div class="draft-mic"><button type="button" class="mic mini ' + (recording ? 'rec' : '') + '" id="draftMic" aria-label="' + (recording ? 'Stop and add to this log' : 'Keep dictating into this log') + '">' + (recording ? ICON.stop : ICON.mic) + '</button>' +
+          '<div><div class="miclabel" id="draftMicLabel">' + (recording ? 'Listening… tap to stop' : 'Add more by voice') + '</div>' +
+          '<div class="mic-hint">' + (recording ? 'New speech is added to this same log.' : 'Paused to think? Tap the mic. It appends to this entry.') + '</div></div></div>';
+      })() +
+      '<div id="micErr" class="warn err mt ' + (dict.error && !dict.on ? '' : 'hide') + '">' + esc(dict.error || '') + '</div>' +
+      (dict.on && dict.appendTo === r.id ? '<div class="card live" id="live" style="margin:12px 0 0"></div>' : '') +
       '<details class="raw"><summary>What you said (raw transcript) ▾</summary><p>' + esc(r.raw) + '</p></details>' +
       '<label class="f"><span>Client</span><input class="i" id="fClient" value="' + esc(r.client) + '" placeholder="Client name"></label>' +
       '<label class="f"><span>' + (extra ? 'Extra work requested' : 'Work done') + '</span><textarea class="i" id="fDesc" rows="4">' + esc(r.fields.description) + '</textarea></label>' +
       '<label class="f"><span>Materials</span><textarea class="i" id="fMat" rows="2" placeholder="None mentioned">' + esc(r.fields.materials) + '</textarea></label>' +
+      '<label class="f"><span>Labor</span><textarea class="i" id="fLabor" rows="2" placeholder="No labor called out">' + esc(r.fields.labor || '') + '</textarea></label>' +
+      '<label class="f extra-field"><span><span class="pill o" style="padding:3px 8px">⚑</span> Extras</span><textarea class="i" id="fExtra" rows="2" placeholder="No extras called out">' + esc(r.fields.extras || '') + '</textarea></label>' +
       '<label class="f ' + (extra ? 'extra-field' : '') + '"><span>' + (extra ? '<span class="pill o" style="padding:3px 8px">⚑</span> Price for this extra' : 'Price (optional)') + '</span><input class="i" id="fPrice" inputmode="decimal" value="' + esc(r.fields.price) + '" placeholder="' + (extra ? 'Say or type a price, e.g. $350' : 'Leave blank for a plain log') + '"></label>' +
+      (r.fields.extras && !extra ? '<div class="small orange" style="margin-top:6px">This price includes the flagged extra' + (r.fields.labor ? ' and labor' : '') + ' unless you type a different total.</div>' : '') +
       '<label class="f"><span>Notes</span><textarea class="i" id="fNotes" rows="2" placeholder="Nothing extra">' + esc(r.fields.notes) + '</textarea></label>' +
       '<label class="f"><span>Receipts</span></label><div class="chips" id="rcpts">' + r.receipts.map(receiptThumb).join('') + '<button class="btn s sm" id="addRc" style="width:auto">' + ICON.receipt + 'Add</button></div>' +
       '<div class="small mt" id="liveEdit">Edits so far: 0%</div>' +
       '<div class="actions mt"><button class="btn s" id="redo">Redo</button><button class="btn ' + (extra ? 'o' : 'dk') + '" id="next" style="flex:2">Looks good → Sign-off</button></div></div>';
     var upd = function () { var s = C.editStats(r.generated, currentFields()); $('#liveEdit').textContent = 'Edits so far: ' + s.charPct + '% of characters changed (' + s.rating + ')'; };
-    $$('#fDesc,#fMat,#fPrice,#fNotes').forEach(function (el) { el.addEventListener('input', upd); });
+    $$('#fDesc,#fMat,#fLabor,#fExtra,#fPrice,#fNotes').forEach(function (el) { el.addEventListener('input', upd); });
     upd();
+    if (dict.on && dict.appendTo === r.id) paintLive();
+    $('#draftMic').onclick = function () {
+      if (dict.on) stopDictation();
+      else { saveDraftFields(r); beginDictation({ appendTo: r.id }); }
+    };
     $('#back').onclick = function () { saveDraftFields(r); go('home'); };
     $('#redo').onclick = function () {
       if (!confirm('Throw away this draft and record again?')) return;
@@ -1113,7 +1424,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     if (a) Object.assign(a, row); else attempts.unshift(row);
     r.stats = s; persist();
   }
-  function draftText(d) { return 'WORK: ' + d.description + ' | MATERIALS: ' + d.materials + ' | PRICE: ' + d.price + ' | NOTES: ' + d.notes; }
+  function draftText(d) { return 'WORK: ' + (d.description || '') + ' | MATERIALS: ' + (d.materials || '') + ' | LABOR: ' + (d.labor || '') + ' | EXTRAS: ' + (d.extras || '') + ' | PRICE: ' + (d.price || '') + ' | NOTES: ' + (d.notes || ''); }
   function browserName() {
     var u = navigator.userAgent;
     var os = /iPhone|iPad/.test(u) ? 'iOS' : /Android/.test(u) ? 'Android' : /Mac/.test(u) ? 'Mac' : /Windows/.test(u) ? 'Windows' : 'Other';
@@ -1188,6 +1499,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       '<div class="row" style="gap:16px;flex-wrap:wrap"><div><div class="lbl" style="margin-top:0">Client</div>' + esc(r.client || '-') + '</div><div><div class="lbl" style="margin-top:0">Job</div>' + esc(r.jobName) + '</div><div><div class="lbl" style="margin-top:0">Date</div>' + fmtDate(r.createdAt) + '</div></div>' +
       '<div class="lbl">' + (extra ? 'Extra work requested' : 'Work completed') + '</div><div>' + esc(f.description) + '</div>' +
       (f.materials ? '<div class="lbl">Materials</div><div style="white-space:pre-line">' + esc(f.materials) + '</div>' : '') +
+      (f.labor ? '<div class="lbl">Labor</div><div style="white-space:pre-line">' + esc(f.labor) + '</div>' : '') +
+      (f.extras ? '<div class="lbl" style="color:var(--od)">Extras</div><div class="orange" style="white-space:pre-line;font-weight:800">' + esc(f.extras) + '</div>' : '') +
       (f.notes ? '<div class="lbl">Notes</div><div style="white-space:pre-line">' + esc(f.notes) + '</div>' : '') +
       (f.price ? '<div class="price"><span>' + (extra ? 'Price for this extra' : 'Price') + '</span><span>' + esc(f.price) + '</span></div>' : '') +
       (r.receipts.length && settings.includeReceipts ? '<div class="lbl">Receipts attached</div><div class="chips" style="margin-top:6px">' + r.receipts.map(function (x) { return '<div class="rthumb" style="width:52px;height:52px;background-image:url(' + x.img + ')"><i>' + esc(x.amount || '') + '</i></div>'; }).join('') + '</div>' : '') +
@@ -1259,6 +1572,15 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     }
     section(extra ? 'EXTRA WORK REQUESTED' : 'WORK COMPLETED', f.description);
     section('MATERIALS', f.materials);
+    section('LABOR', f.labor);
+    if (f.extras) {
+      var elines = doc.splitTextToSize(pdfSafe(f.extras), W - 2 * M);
+      ensure(24 + elines.length * 16);
+      doc.setTextColor(201, 78, 10); doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.text('EXTRAS', M, y); y += 16;
+      doc.setFontSize(12);
+      elines.forEach(function (ln) { ensure(16); doc.text(ln, M, y); y += 16; });
+      y += 12;
+    }
     section('NOTES', f.notes);
     if (f.price) {
       ensure(64);
@@ -1347,7 +1669,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         var a = attempts.find(function (x) { return x.recordId === r.id; });
         return '<div class="card hitem ' + (r.mode === 'extra' ? 'extra' : '') + '" data-open="' + r.id + '"><div style="flex:1;min-width:0"><div class="row" style="gap:6px"><b style="font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(r.jobName) + '</b>' + (r.mode === 'extra' ? '<span class="pill o" style="padding:3px 8px">⚑ Extra</span>' : '') + '</div>' +
           '<div class="meta" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(r.fields.description || r.raw) + '</div>' +
-          '<div class="small">' + fmtDate(r.createdAt) + ' · ' + fmtTime(r.createdAt) + (a ? ' · ' + a.charPct + '% edited' : '') + (r.fields.price ? ' · <b class="' + (r.mode === 'extra' ? 'orange' : '') + '">' + esc(r.fields.price) + '</b>' : '') + '</div></div>' + statusPill(r.status) + '</div>';
+          '<div class="small">' + fmtDate(r.createdAt) + ' · ' + fmtTime(r.createdAt) + (a ? ' · ' + a.charPct + '% edited' : '') + (r.fields.extras ? ' · <b class="orange">Extra</b>' : '') + (r.fields.price ? ' · <b class="' + ((r.mode === 'extra' || r.fields.extras) ? 'orange' : '') + '">' + esc(r.fields.price) + '</b>' : '') + '</div></div>' + statusPill(r.status) + '</div>';
       }).join('') : '<div class="card pad meta" style="text-align:center">Nothing yet. Tap the mic on the Log tab to try one.</div>') + '</div>';
     $('#csv').onclick = exportCsv;
     $$('[data-open]').forEach(function (el) { el.onclick = function () { var r = rec(el.dataset.open); go(r.status === 'draft' && !r.stats ? 'draft' : 'signoff', r.id); }; });
